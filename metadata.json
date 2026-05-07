@@ -1,0 +1,6 @@
+{
+  "name": "Vision Pro PWA",
+  "description": "Mobile-web vision assistant using OpenCV.js, Expo Sensors, and real-time camera processing.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["camera", "sensors"]
+}
