@@ -15,90 +15,9 @@ export interface Detection {
 }
 
 // COCO dataset 80 classes
-const COCO_LABELS = [
-  "person",
-  "bicycle",
-  "car",
-  "motorcycle",
-  "airplane",
-  "bus",
-  "train",
-  "truck",
-  "boat",
-  "traffic light",
-  "fire hydrant",
-  "stop sign",
-  "parking meter",
-  "bench",
-  "bird",
-  "cat",
-  "dog",
-  "horse",
-  "sheep",
-  "cow",
-  "elephant",
-  "bear",
-  "zebra",
-  "giraffe",
-  "backpack",
-  "umbrella",
-  "handbag",
-  "tie",
-  "suitcase",
-  "frisbee",
-  "skis",
-  "snowboard",
-  "sports ball",
-  "kite",
-  "baseball bat",
-  "baseball glove",
-  "skateboard",
-  "surfboard",
-  "tennis racket",
-  "bottle",
-  "wine glass",
-  "cup",
-  "fork",
-  "knife",
-  "spoon",
-  "bowl",
-  "banana",
-  "apple",
-  "sandwich",
-  "orange",
-  "broccoli",
-  "carrot",
-  "hot dog",
-  "pizza",
-  "donut",
-  "cake",
-  "chair",
-  "couch",
-  "potted plant",
-  "bed",
-  "dining table",
-  "toilet",
-  "tv",
-  "laptop",
-  "mouse",
-  "remote",
-  "keyboard",
-  "cell phone",
-  "microwave",
-  "oven",
-  "toaster",
-  "sink",
-  "refrigerator",
-  "book",
-  "clock",
-  "vase",
-  "scissors",
-  "teddy bear",
-  "hair drier",
-  "toothbrush",
-];
+const COCO_LABELS = ["food"];
 
-const INPUT_SIZE = 640; // YOLO26n 640x640 input
+const INPUT_SIZE = 320; // YOLO26n 640x640 input
 const CONFIDENCE_THRESHOLD = 0.5;
 const NMS_THRESHOLD = 0.4;
 
@@ -111,7 +30,7 @@ export class YoloDetector {
   private inferenceTimes: number[] = [];
   private fps = 0;
 
-  async loadModel(modelPath: string = "/yolo26n.onnx") {
+  async loadModel(modelPath: string = "/best.onnx") {
     try {
       console.log("Loading ONNX model from:", modelPath);
       this.session = await ort.InferenceSession.create(modelPath as any, {
