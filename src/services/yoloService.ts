@@ -30,7 +30,7 @@ export class YoloDetector {
   private inferenceTimes: number[] = [];
   private fps = 0;
 
-  async loadModel(modelPath: string = "/best.onnx") {
+  async loadModel(modelPath: string = "/") {
     try {
       console.log("Loading ONNX model from:", modelPath);
       this.session = await ort.InferenceSession.create(modelPath as any, {
