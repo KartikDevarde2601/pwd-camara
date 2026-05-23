@@ -277,11 +277,10 @@ export default function App() {
         <div>
           <h1 className="text-xl font-bold tracking-tighter uppercase flex items-center gap-2">
             <Zap className="fill-blue-500 text-blue-500 w-5 h-5" />
-            Vision<span className="text-blue-500">Pro</span>
+            <p className="text-[10px] text-neutral-500 uppercase tracking-widest font-mono">
+              Experimental CV Runtime
+            </p>
           </h1>
-          <p className="text-[10px] text-neutral-500 uppercase tracking-widest font-mono">
-            Experimental CV Runtime
-          </p>
         </div>
         <div className="text-right flex flex-col items-end gap-1">
           <div
@@ -447,15 +446,6 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
-
-        <div className="flex items-center gap-4 py-2 px-4 bg-white/5 rounded-xl border border-white/10">
-          <ShieldCheck className="w-4 h-4 text-emerald-500" />
-          <p className="text-[11px] text-neutral-400">
-            System running exclusively in{" "}
-            <span className="text-white">Secure Sandbox</span>. No data is
-            transmitted off-device.
-          </p>
-        </div>
       </footer>
     </main>
   );
