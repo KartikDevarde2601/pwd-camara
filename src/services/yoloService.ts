@@ -1,9 +1,6 @@
-import * as ort from "onnxruntime-web";
-
-// Point ONNX Runtime to CDN-hosted WASM files
-ort.env.wasm.wasmPaths =
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.25.1/dist/";
-ort.env.wasm.numThreads = 1;
+import * as tf from "@tensorflow/tfjs";
+import "@tensorflow/tfjs-backend-webgl";
+import "@tensorflow/tfjs-backend-cpu";
 
 export interface Detection {
   x: number;
@@ -14,7 +11,6 @@ export interface Detection {
   class: string;
 }
 
-// COCO dataset 80 classes
 const COCO_LABELS = [
   "person",
   "bicycle",
@@ -98,12 +94,8 @@ const COCO_LABELS = [
   "toothbrush",
 ];
 
-const INPUT_SIZE = 640; // YOLO26n 640x640 input
-const CONFIDENCE_THRESHOLD = 0.5;
-const NMS_THRESHOLD = 0.4;
-
 export class YoloDetector {
-  private session: ort.InferenceSession | null = null;
+  private model: tf.GraphModel | null = null;
   private isLoaded = false;
   private preprocessCanvas: HTMLCanvasElement | null = null;
   private preprocessCtx: CanvasRenderingContext2D | null = null;
@@ -111,99 +103,117 @@ export class YoloDetector {
   private inferenceTimes: number[] = [];
   private fps = 0;
 
-  async loadModel(modelPath: string = "/yolo26n.onnx") {
+  async loadModel(modelPath: string = "/models/yolo26n_web_model/model.json") {
     try {
-      console.log("Loading ONNX model from:", modelPath);
-      this.session = await ort.InferenceSession.create(modelPath as any, {
-        executionProviders: ["wasm"],
-        graphOptimizationLevel: "all",
-        enableMemPattern: false,
-      });
+      console.log("Setting TF.js backend to: webgl");
+      await tf.setBackend("webgl");
+      await tf.ready();
+
+      console.log("Loading TFJS model from:", modelPath);
+      this.model = await tf.loadGraphModel(modelPath);
+
+      // Warm up
+      const warmup = tf.zeros([1, 320, 320, 3]);
+      this.model.predict(warmup);
+      warmup.dispose();
+
       this.isLoaded = true;
-      console.log("ONNX model loaded successfully");
+      console.log("TFJS model loaded successfully");
     } catch (error) {
-      console.error("Failed to load ONNX model:", error);
+      console.error("Failed to load TFJS model:", error);
     }
   }
 
   async detect(
     imageSource: HTMLCanvasElement | HTMLImageElement | HTMLVideoElement,
   ): Promise<Detection[]> {
-    if (!this.session || !this.isLoaded) return [];
+    if (!this.model || !this.isLoaded) return [];
 
     try {
       const startTime = performance.now();
 
-      // Preprocess with letterbox padding (maintains aspect ratio)
-      const input = this.preprocess(imageSource);
+      // Preprocess to 320x320 with letterbox (matches TFJS model input)
+      const inputTensor = this.preprocess(imageSource);
 
       // Run inference
-      const results = await this.session.run({ images: input });
+      const rawOutput = await this.model.predict(inputTensor);
 
-      // Get output tensor — log shape to debug
-      const output = results["output0"] || Object.values(results)[0];
-      const data = output.data as Float32Array;
-      const dims = output.dims;
-      console.log("Model output shape:", dims, "data length:", data.length);
-      console.log("First 12 values:", Array.from(data.slice(0, 12)));
+      // Model has 2 outputs: [Identity:0 = bbox_data, TopKV2:0 = class_indices]
+      // Handle both array and single tensor return
+      let outputTensor: tf.Tensor;
+      if (Array.isArray(rawOutput)) {
+        outputTensor = rawOutput[0]; // Identity:0 — the main detection output
+        // Dispose unused tensors
+        for (let i = 1; i < rawOutput.length; i++) {
+          rawOutput[i].dispose();
+        }
+      } else {
+        outputTensor = rawOutput as tf.Tensor;
+      }
 
-      // YOLO26n outputs [1, num_detections, 6] where 6 = [x1, y1, x2, y2, confidence, class_id]
-      // OR [1, 84, 8400] where 84 = [cx, cy, w, h, class_scores...]
-      const numDetections = dims[1];
-      const numFeatures = dims[2];
+      const outputData = (await outputTensor.data()) as Float32Array;
+      const outputShape = outputTensor.shape;
+
       console.log(
-        `Output has ${numDetections} detections, ${numFeatures} features each`,
+        `Model output shape: [${outputShape}], first 10 values:`,
+        Array.from(outputData.slice(0, 10)),
       );
 
+      // Determine output format — likely [1, num_detections, 6] = [x1,y1,x2,y2,conf,class_id]
+      // OR [1, 84, 8400] for standard YOLO
+      const numDetections = outputShape[1];
+      const numFeatures = outputShape[2];
+
       const detections: Detection[] = [];
-
-      // Calculate padding offsets for coordinate transformation
       const srcAspect = imageSource.width / imageSource.height;
-      const dstAspect = INPUT_SIZE / INPUT_SIZE; // 1 (square)
 
+      // Calculate letterbox padding offsets
       let padX = 0,
         padY = 0,
-        scaleX = 1,
-        scaleY = 1;
+        scaleX: number,
+        scaleY: number;
 
-      if (srcAspect > dstAspect) {
-        // Image is wider — pad top/bottom
-        scaleX = imageSource.width / INPUT_SIZE;
-        scaleY = imageSource.width / INPUT_SIZE;
-        padY = (INPUT_SIZE - INPUT_SIZE / srcAspect) / 2;
+      if (srcAspect > 1) {
+        scaleX = imageSource.width / 320;
+        scaleY = imageSource.width / 320;
+        padY = (320 - 320 / srcAspect) / 2;
       } else {
-        // Image is taller — pad left/right
-        scaleX = imageSource.height / INPUT_SIZE;
-        scaleY = imageSource.height / INPUT_SIZE;
-        padX = (INPUT_SIZE - INPUT_SIZE * srcAspect) / 2;
+        scaleX = imageSource.height / 320;
+        scaleY = imageSource.height / 320;
+        padX = (320 - 320 * srcAspect) / 2;
       }
 
       for (let i = 0; i < numDetections; i++) {
         const idx = i * 6;
-        const x1 = data[idx];
-        const y1 = data[idx + 1];
-        const x2 = data[idx + 2];
-        const y2 = data[idx + 3];
-        const confidence = data[idx + 4];
-        const classId = Math.round(data[idx + 5]);
+        const x1 = outputData[idx];
+        const y1 = outputData[idx + 1];
+        const x2 = outputData[idx + 2];
+        const y2 = outputData[idx + 3];
+        const confidence = outputData[idx + 4];
 
-        if (confidence < CONFIDENCE_THRESHOLD) continue;
+        if (confidence < 0.5) continue;
 
-        // Transform coordinates back to original image space
         const tx1 = (x1 - padX) * scaleX;
         const ty1 = (y1 - padY) * scaleY;
         const tx2 = (x2 - padX) * scaleX;
         const ty2 = (y2 - padY) * scaleY;
 
+        const classId = Math.round(outputData[idx + 5]);
+        const label = COCO_LABELS[classId] || `class_${classId}`;
+
         detections.push({
           x: Math.max(0, tx1),
           y: Math.max(0, ty1),
-          width: Math.max(0, tx2 - tx1),
-          height: Math.max(0, ty2 - ty1),
+          width: Math.max(1, tx2 - tx1),
+          height: Math.max(1, ty2 - ty1),
           confidence,
-          class: COCO_LABELS[classId] || `class_${classId}`,
+          class: label,
         });
       }
+
+      // Cleanup tensors
+      inputTensor.dispose();
+      outputTensor.dispose();
 
       // Apply NMS
       const finalDetections = this.applyNMS(detections);
@@ -225,17 +235,13 @@ export class YoloDetector {
     }
   }
 
-  /**
-   * Preprocess image with letterbox padding to maintain aspect ratio
-   */
   private preprocess(
     source: HTMLCanvasElement | HTMLImageElement | HTMLVideoElement,
-  ): ort.Tensor {
-    // Create/reuse preprocess canvas
+  ): tf.Tensor4D {
     if (!this.preprocessCanvas) {
       this.preprocessCanvas = document.createElement("canvas");
-      this.preprocessCanvas.width = INPUT_SIZE;
-      this.preprocessCanvas.height = INPUT_SIZE;
+      this.preprocessCanvas.width = 320;
+      this.preprocessCanvas.height = 320;
       this.preprocessCtx = this.preprocessCanvas.getContext("2d", {
         willReadFrequently: true,
       })!;
@@ -243,23 +249,23 @@ export class YoloDetector {
 
     const ctx = this.preprocessCtx!;
 
-    // Fill with black (letterbox padding)
+    // Fill black background
     ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
+    ctx.fillRect(0, 0, 320, 320);
 
-    // Calculate aspect-ratio-preserved scaling
+    // Letterbox resize maintaining aspect ratio
     const srcAspect = source.width / source.height;
     let drawWidth: number, drawHeight: number, offsetX: number, offsetY: number;
 
     if (srcAspect > 1) {
-      drawWidth = INPUT_SIZE;
-      drawHeight = INPUT_SIZE / srcAspect;
+      drawWidth = 320;
+      drawHeight = 320 / srcAspect;
       offsetX = 0;
-      offsetY = (INPUT_SIZE - drawHeight) / 2;
+      offsetY = (320 - drawHeight) / 2;
     } else {
-      drawHeight = INPUT_SIZE;
-      drawWidth = INPUT_SIZE * srcAspect;
-      offsetX = (INPUT_SIZE - drawWidth) / 2;
+      drawHeight = 320;
+      drawWidth = 320 * srcAspect;
+      offsetX = (320 - drawWidth) / 2;
       offsetY = 0;
     }
 
@@ -275,26 +281,20 @@ export class YoloDetector {
       drawHeight,
     );
 
-    // Build NCHW tensor [1, 3, 320, 320]
-    const imageData = ctx.getImageData(0, 0, INPUT_SIZE, INPUT_SIZE);
-    const pixels = imageData.data;
-    const input = new Float32Array(1 * 3 * INPUT_SIZE * INPUT_SIZE);
-
-    for (let i = 0; i < INPUT_SIZE * INPUT_SIZE; i++) {
-      input[i] = pixels[i * 4] / 255.0; // R
-      input[INPUT_SIZE * INPUT_SIZE + i] = pixels[i * 4 + 1] / 255.0; // G
-      input[2 * INPUT_SIZE * INPUT_SIZE + i] = pixels[i * 4 + 2] / 255.0; // B
-    }
-
-    return new ort.Tensor("float32", input, [1, 3, INPUT_SIZE, INPUT_SIZE]);
+    // TF.js expects NHWC format [1, 320, 320, 3]
+    return tf.tidy(() => {
+      return tf.browser
+        .fromPixels(this.preprocessCanvas!)
+        .toFloat()
+        .div(255.0)
+        .expandDims(0) as tf.Tensor4D;
+    });
   }
 
-  /**
-   * Apply Non-Maximum Suppression
-   */
   private applyNMS(detections: Detection[]): Detection[] {
-    detections.sort((a, b) => b.confidence - a.confidence);
+    if (detections.length <= 1) return detections;
 
+    detections.sort((a, b) => b.confidence - a.confidence);
     const filtered: Detection[] = [];
     const used = new Set<number>();
 
@@ -305,7 +305,7 @@ export class YoloDetector {
 
       for (let j = i + 1; j < detections.length; j++) {
         if (used.has(j)) continue;
-        if (this.calculateIoU(detections[i], detections[j]) > NMS_THRESHOLD) {
+        if (this.calculateIoU(detections[i], detections[j]) > 0.4) {
           used.add(j);
         }
       }
@@ -319,9 +319,7 @@ export class YoloDetector {
     const y1 = Math.max(a.y, b.y);
     const x2 = Math.min(a.x + a.width, b.x + b.width);
     const y2 = Math.min(a.y + a.height, b.y + b.height);
-
     if (x2 <= x1 || y2 <= y1) return 0;
-
     const intersection = (x2 - x1) * (y2 - y1);
     const union = a.width * a.height + b.width * b.height - intersection;
     return intersection / union;
@@ -330,11 +328,9 @@ export class YoloDetector {
   getIsLoaded() {
     return this.isLoaded;
   }
-
   getFps() {
     return this.fps;
   }
-
   getLastInferenceTime() {
     return this.lastInferenceTime;
   }
